@@ -1,22 +1,22 @@
 #!/usr/bin/env python
 """
-train_blip2_llama_vqa.py
-Fine-tunes a custom BLIP-2 model (vision encoder + Q-Former from Salesforce BLIP-2,
-text model swapped to LLaMA-3.1) on the VQA-v2 dataset using Hugging Face TRL’s
-SFTTrainer.
+train_blip2_llama_vqa_qformer.py
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Fine‑tunes **only the Q‑Former** of a custom BLIP‑2 model with a LLaMA‑3.1
+backend on the VQA‑v2 dataset, using Hugging Face **TRL SFTTrainer**.
 
-❱❱  Required arguments
-    --llama_name       Local path or HF hub name of the LLaMA-3.1 checkpoint.
-❱❱  Optional arguments
-    --blip2_opt_name   Source BLIP-2 checkpoint for vision & Q-Former weights
-                       (default: "Salesforce/blip2-opt-2.7b").
-    --output_dir       Directory to save checkpoints (default shown below).
-    --epochs           Number of fine-tuning epochs (default: 5).
-    --batch_size       Per-device batch size (default: 4).
-    --lr               Learning rate (default: 2e-5).
+🏎️  **Multi‑GPU ready (2×GPU)**
+    Launch with either `torchrun` (PyTorch DDP) or `accelerate launch`, e.g.:
+
+        torchrun --standalone --nproc_per_node=2 train_blip2_llama_vqa_qformer.py \
+            --llama_name /path/to/llama-3.1-7b
+
+All non‑Q‑Former weights (vision encoder + language model) are frozen, so the
+script uses very little GPU memory per device.
 """
 
 import argparse
+import os
 from pathlib import Path
 
 import torch
@@ -31,48 +31,55 @@ from transformers import (
 )
 from trl import SFTTrainer
 
-
 # ────────────────────────────────────────────────────────────────────────────────
 # Helper functions
 # ────────────────────────────────────────────────────────────────────────────────
+
+def freeze_everything_but_qformer(model: Blip2ForConditionalGeneration):
+    """Freeze *all* parameters except those belonging to the Q‑Former."""
+    for name, param in model.named_parameters():
+        param.requires_grad = "qformer" in name  # train only Q‑Former
+
+
 def load_blip2_llama(blip2_opt_name: str, llama_name: str, device: torch.device):
-    """Load BLIP-2 vision+Q-Former weights, replace text model with LLaMA-3.1."""
-    # 1) Load source BLIP-2 (OPT) to grab vision encoder + Q-Former
+    """Load BLIP‑2 vision + Q‑Former weights and swap the text model to LLaMA‑3.1."""
+    # 1) Source BLIP‑2 (OPT) → vision + Q‑Former
     blip2_opt = Blip2ForConditionalGeneration.from_pretrained(blip2_opt_name)
 
-    # 2) Load LLaMA-3.1 (causal LM) & tokenizer
+    # 2) Target LLaMA‑3.1 (causal LM) + tokenizer
     llama_model = AutoModelForCausalLM.from_pretrained(llama_name)
     llama_tok   = AutoTokenizer.from_pretrained(llama_name, use_fast=True)
 
-    # 3) Build a new BLIP-2 config whose text_config is LLaMA’s
-    new_cfg            = Blip2Config.from_dict(blip2_opt.config.to_dict())
-    new_cfg.text_config = llama_model.config  # swap text config
+    # 3) Compose new config whose text_config is LLaMA’s
+    new_cfg             = Blip2Config.from_dict(blip2_opt.config.to_dict())
+    new_cfg.text_config = llama_model.config
 
-    # 4) Instantiate fresh BLIP-2 model with that config
+    # 4) Fresh BLIP‑2 shell with that config
     blip2_llama = Blip2ForConditionalGeneration(new_cfg)
 
-    # 5) Copy weights: vision encoder & Q-Former from OPT model, LLM from LLaMA
+    # 5) Weight transfer
     blip2_llama.vision_model.load_state_dict(blip2_opt.vision_model.state_dict())
     blip2_llama.qformer.load_state_dict(blip2_opt.qformer.state_dict())
     blip2_llama.language_model.load_state_dict(llama_model.state_dict())
 
-    # 6) Create processor; swap tokenizer to LLaMA’s
-    processor               = Blip2Processor.from_pretrained(blip2_opt_name)
-    processor.tokenizer     = llama_tok
+    # 6) Processor with LLaMA tokenizer
+    processor           = Blip2Processor.from_pretrained(blip2_opt_name)
+    processor.tokenizer = llama_tok
 
     blip2_llama.to(device)
     return blip2_llama, processor
 
 
-def vqa_collate_fn_factory(processor):
-    """Return a data-collator that handles image + question → answer training."""
-    def collate(batch):
-        # Split fields
-        images     = [ex["image"].convert("RGB") for ex in batch]
-        questions  = [ex["question"].strip() for ex in batch]
-        answers    = [ex["multiple_choice_answer"].strip() for ex in batch]
+def vqa_collate_fn_factory(processor, device):
+    """Return a collate function that prepares image + question → answer pairs."""
 
-        # Build prompt “Question: …? Answer:” and track its token length
+    def collate(batch):
+        # Extract fields
+        images    = [ex["image"].convert("RGB") for ex in batch]
+        questions = [ex["question"].strip() for ex in batch]
+        answers   = [ex["multiple_choice_answer"].strip() for ex in batch]
+
+        # Build prompt: "Question: …? Answer:"
         prompts, prompt_lens = [], []
         for q in questions:
             if not q.endswith("?"):
@@ -83,10 +90,10 @@ def vqa_collate_fn_factory(processor):
                 len(processor.tokenizer(prompt, add_special_tokens=False).input_ids)
             )
 
-        # Full text = prompt + ground-truth answer
+        # Full text = prompt + ground‑truth answer
         full_texts = [f"{p} {a}" for p, a in zip(prompts, answers)]
 
-        # Image + text to tensors
+        # Processor handles both modalities → tensors
         enc = processor(
             images=images,
             text=full_texts,
@@ -95,7 +102,7 @@ def vqa_collate_fn_factory(processor):
             return_tensors="pt",
         )
 
-        # Labels: mask prompt & padding tokens with −100
+        # Labels: mask prompt + padding tokens with −100
         labels = enc["input_ids"].clone()
         pad_id = processor.tokenizer.pad_token_id
         for i, l in enumerate(prompt_lens):
@@ -103,7 +110,8 @@ def vqa_collate_fn_factory(processor):
         labels[labels == pad_id] = -100
         enc["labels"] = labels
 
-        return {k: v.cuda() for k, v in enc.items()}
+        # Move everything to the correct device (per‑process GPU in DDP)
+        return {k: v.to(device) for k, v in enc.items()}
 
     return collate
 
@@ -111,29 +119,35 @@ def vqa_collate_fn_factory(processor):
 # ────────────────────────────────────────────────────────────────────────────────
 # Main
 # ────────────────────────────────────────────────────────────────────────────────
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--llama_name", required=True, help="HF path or local dir of LLaMA-3.1")
+    parser.add_argument("--llama_name", required=True, help="HF path or local dir of LLaMA‑3.1")
     parser.add_argument("--blip2_opt_name", default="Salesforce/blip2-opt-2.7b")
-    parser.add_argument("--output_dir", default="./blip2-llama-vqa-checkpoints")
+    parser.add_argument("--output_dir", default="./blip2-llama-vqa-checkpoints-qformer")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=2e-5)
     args = parser.parse_args()
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Detect local rank in DDP / Accelerate; default CUDA:0
+    local_rank = int(os.getenv("LOCAL_RANK", 0))
+    device     = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
     # 1) Model & processor
     model, processor = load_blip2_llama(args.blip2_opt_name, args.llama_name, device)
 
-    # 2) Datasets
+    # 2) Freeze everything except Q‑Former
+    freeze_everything_but_qformer(model)
+
+    # 3) Datasets
     train_ds = load_dataset("HuggingFaceM4/VQAv2", split="train")
     val_ds   = load_dataset("HuggingFaceM4/VQAv2", split="validation")
 
-    # 3) Collator
-    collate_fn = vqa_collate_fn_factory(processor)
+    # 4) Collator
+    collate_fn = vqa_collate_fn_factory(processor, device)
 
-    # 4) Training arguments
+    # 5) Training arguments (Accelerate handles multi‑GPU automatically)
     training_args = TrainingArguments(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.batch_size,
@@ -144,28 +158,29 @@ def main():
         save_steps=1000,
         save_total_limit=2,
         evaluation_strategy="epoch",
-        remove_unused_columns=False,             # custom collator
+        remove_unused_columns=False,
         dataset_kwargs={"skip_prepare_dataset": True},
     )
 
-    # 5) SFTTrainer
+    # 6) SFTTrainer
     trainer = SFTTrainer(
         model=model,
         args=training_args,
         train_dataset=train_ds,
         eval_dataset=val_ds,
         data_collator=collate_fn,
-        processing_class=processor.tokenizer,    # lets TRL save tokenizer on push
+        processing_class=processor.tokenizer,  # ensures tokenizer is saved
     )
 
-    # 6) Fine-tune
+    # 7) Fine‑tune (only Q‑Former trainable)
     trainer.train()
 
-    # 7) Save final model + tokenizer
+    # 8) Save final artefacts
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     trainer.save_model(args.output_dir)
     processor.tokenizer.save_pretrained(args.output_dir)
-    print(f"\n✅  Fine-tuned model saved to {args.output_dir}\n")
+    if local_rank == 0:
+        print(f"\n✅  Q‑Former‑only fine‑tuned model saved to {args.output_dir}\n")
 
 
 if __name__ == "__main__":
