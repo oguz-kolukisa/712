@@ -169,7 +169,7 @@ def main():
         dataset_text_field   = "question",
         dataset_kwargs       = {"skip_prepare_dataset": True},  # <— replaces old hack
         
-        per_device_train_batch_size= 32  
+        per_device_train_batch_size= 32 , 
     )
 
     # 6) trainer -------------------------------------------------------------------
