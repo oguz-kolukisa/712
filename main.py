@@ -171,7 +171,6 @@ def main():
         eval_dataset=val_ds,
         data_collator=collate_fn,
         processing_class=processor.tokenizer,  # ensures tokenizer is saved
-        dataset_kwargs={"skip_prepare_dataset": True},
 
     )
 
