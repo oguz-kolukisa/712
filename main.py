@@ -122,7 +122,7 @@ def vqa_collate_fn_factory(processor, device):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--llama_name", required=True, help="HF path or local dir of LLaMA‑3.1")
+    parser.add_argument("--llama_name", default="meta-llama/Llama-3.1-8B-Instruct", help="HF path or local dir of LLaMA‑3.1")
     parser.add_argument("--blip2_opt_name", default="Salesforce/blip2-opt-2.7b")
     parser.add_argument("--output_dir", default="./blip2-llama-vqa-checkpoints-qformer")
     parser.add_argument("--epochs", type=int, default=5)
