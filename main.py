@@ -65,7 +65,7 @@ def load_blip2_llama(blip2_opt_name: str, llama_name: str, device: torch.device)
     # 6) Processor with LLaMA tokenizer
     processor           = Blip2Processor.from_pretrained(blip2_opt_name)
     processor.tokenizer = llama_tok
-
+    processor.tokenizer.pad_token = processor.tokenizer.eos_token 
     blip2_llama.to(device)
     return blip2_llama, processor
 
