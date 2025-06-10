@@ -18,7 +18,7 @@ script uses very little GPU memory per device.
 import argparse
 import os
 from pathlib import Path
-
+import aiohttp
 import torch
 from datasets import load_dataset
 from transformers import (
