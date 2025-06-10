@@ -161,7 +161,6 @@ def main():
         save_total_limit=2,
         eval_strategy="steps",
         remove_unused_columns=False,
-        dataset_kwargs={"skip_prepare_dataset": True},
     )
 
     # 6) SFTTrainer
@@ -172,6 +171,8 @@ def main():
         eval_dataset=val_ds,
         data_collator=collate_fn,
         processing_class=processor.tokenizer,  # ensures tokenizer is saved
+        dataset_kwargs={"skip_prepare_dataset": True},
+
     )
 
     # 7) Fine‑tune (only Q‑Former trainable)
