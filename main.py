@@ -156,10 +156,10 @@ def main():
         num_train_epochs=args.epochs,
         learning_rate=args.lr,
         fp16=torch.cuda.is_available(),
-        logging_steps=50,
+        logging_steps=500,
         save_steps=1000,
         save_total_limit=2,
-        evaluation_strategy="epoch",
+        eval_strategy="steps",
         remove_unused_columns=False,
         dataset_kwargs={"skip_prepare_dataset": True},
     )
