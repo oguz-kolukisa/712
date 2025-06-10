@@ -126,7 +126,7 @@ def main():
     parser.add_argument("--blip2_opt_name", default="Salesforce/blip2-opt-2.7b")
     parser.add_argument("--output_dir", default="./blip2-llama-vqa-checkpoints-qformer")
     parser.add_argument("--epochs", type=int, default=5)
-    parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=2e-5)
     args = parser.parse_args()
 
@@ -169,7 +169,6 @@ def main():
         dataset_text_field   = "question",
         dataset_kwargs       = {"skip_prepare_dataset": True},  # <— replaces old hack
         
-        per_device_train_batch_size= 32 , 
     )
 
     # 6) trainer -------------------------------------------------------------------
