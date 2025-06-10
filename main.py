@@ -30,6 +30,7 @@ from transformers import (
     TrainingArguments,
 )
 from trl import SFTTrainer, SFTConfig
+from transformers.trainer_utils import get_last_checkpoint
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Helper functions
@@ -180,8 +181,21 @@ def main():
         data_collator      = collate_fn,
     )
 
-    # 7) Fine‑tune (only Q‑Former trainable)
-    trainer.train()
+
+    # ───────────────────────────────────────────────────────────────────────────────
+    # 7) Fine-tune (only Q-Former trainable) — resume if a checkpoint exists
+    # ───────────────────────────────────────────────────────────────────────────────
+    last_checkpoint = None
+    if os.path.isdir(args.output_dir):
+        last_checkpoint = get_last_checkpoint(args.output_dir)
+
+    if last_checkpoint is not None:
+        print(f"↩️  Found checkpoint at {last_checkpoint} – resuming training.")
+        trainer.train(resume_from_checkpoint=last_checkpoint)
+    else:
+        trainer.train()
+
+    
 
     # 8) Save final artefacts
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
