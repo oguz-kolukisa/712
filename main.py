@@ -111,7 +111,7 @@ def vqa_collate_fn_factory(processor, device):
         enc["labels"] = labels
 
         # Move everything to the correct device (per‑process GPU in DDP)
-        return {k: v.to(device) for k, v in enc.items()}
+        return {k: v for k, v in enc.items()}
 
     return collate
 
@@ -168,6 +168,8 @@ def main():
         # —— SFT-specific extras ——————————————————————————
         dataset_text_field   = "question",
         dataset_kwargs       = {"skip_prepare_dataset": True},  # <— replaces old hack
+        
+        per_device_train_batch_size= 32  
     )
 
     # 6) trainer -------------------------------------------------------------------
