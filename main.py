@@ -141,8 +141,8 @@ def main():
     freeze_everything_but_qformer(model)
 
     # 3) Datasets
-    train_ds = load_dataset("HuggingFaceM4/VQAv2", split="train")
-    val_ds   = load_dataset("HuggingFaceM4/VQAv2", split="validation")
+    train_ds = load_dataset("HuggingFaceM4/VQAv2", split="train", trust_remote_code=True)
+    val_ds   = load_dataset("HuggingFaceM4/VQAv2", split="validation", trust_remote_code=True)
 
     # 4) Collator
     collate_fn = vqa_collate_fn_factory(processor, device)
