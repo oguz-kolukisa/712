@@ -162,7 +162,7 @@ def main():
         eval_strategy="steps",
         remove_unused_columns=False,
     )
-
+    training_args.dataset_kwargs = {"skip_prepare_dataset": True}
     # 6) SFTTrainer
     trainer = SFTTrainer(
         model=model,
