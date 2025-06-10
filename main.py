@@ -134,15 +134,17 @@ def main():
     local_rank = int(os.getenv("LOCAL_RANK", 0))
     device     = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
-    # 1) Model & processor
-    model, processor = load_blip2_llama(args.blip2_opt_name, args.llama_name, device)
-
-    # 2) Freeze everything except Q‑Former
-    freeze_everything_but_qformer(model)
-
-    # 3) Datasets
+    # 1) Datasets
     train_ds = load_dataset("HuggingFaceM4/VQAv2", split="train", trust_remote_code=True,    storage_options={'client_kwargs': {'timeout': aiohttp.ClientTimeout(total=3600)}})
     val_ds   = load_dataset("HuggingFaceM4/VQAv2", split="validation", trust_remote_code=True,    storage_options={'client_kwargs': {'timeout': aiohttp.ClientTimeout(total=3600)}})
+
+    # 2) Model & processor
+    model, processor = load_blip2_llama(args.blip2_opt_name, args.llama_name, device)
+
+    # 3) Freeze everything except Q‑Former
+    freeze_everything_but_qformer(model)
+
+    
 
     # 4) Collator
     collate_fn = vqa_collate_fn_factory(processor, device)
