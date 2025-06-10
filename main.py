@@ -158,10 +158,11 @@ def main():
         num_train_epochs     = args.epochs,
         learning_rate        = args.lr,
         fp16                 = torch.cuda.is_available(),
-        logging_steps        = 500,
+        logging_steps        = 50,
         save_steps           = 1000,
         save_total_limit     = 2,
-        evaluation_strategy  = "steps",
+        eval_strategy  = "steps",
+        eval_steps =5000 ,
         remove_unused_columns= False,
 
         # —— SFT-specific extras ——————————————————————————
