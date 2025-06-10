@@ -29,7 +29,7 @@ from transformers import (
     Blip2Processor,
     TrainingArguments,
 )
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Helper functions
@@ -148,30 +148,34 @@ def main():
 
     # 4) Collator
     collate_fn = vqa_collate_fn_factory(processor, device)
+    
+    # 5) Trainer Config
 
-    # 5) Training arguments (Accelerate handles multi‑GPU automatically)
-    training_args = TrainingArguments(
-        output_dir=args.output_dir,
-        per_device_train_batch_size=args.batch_size,
-        num_train_epochs=args.epochs,
-        learning_rate=args.lr,
-        fp16=torch.cuda.is_available(),
-        logging_steps=500,
-        save_steps=1000,
-        save_total_limit=2,
-        eval_strategy="steps",
-        remove_unused_columns=False,
+    sft_config = SFTConfig(
+        # —— standard Trainer/TrainingArguments flags ————————————————
+        output_dir           = args.output_dir,
+        per_device_train_batch_size = args.batch_size,
+        num_train_epochs     = args.epochs,
+        learning_rate        = args.lr,
+        fp16                 = torch.cuda.is_available(),
+        logging_steps        = 500,
+        save_steps           = 1000,
+        save_total_limit     = 2,
+        evaluation_strategy  = "steps",
+        remove_unused_columns= False,
+
+        # —— SFT-specific extras ——————————————————————————
+        dataset_text_field   = "question",
+        dataset_kwargs       = {"skip_prepare_dataset": True},  # <— replaces old hack
     )
-    training_args.dataset_kwargs = {"skip_prepare_dataset": True}
-    # 6) SFTTrainer
+
+    # 6) trainer -------------------------------------------------------------------
     trainer = SFTTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_ds,
-        eval_dataset=val_ds,
-        data_collator=collate_fn,
-        processing_class=processor.tokenizer,  # ensures tokenizer is saved
-        dataset_text_field="question"
+        model              = model,
+        args               = sft_config,          # << now a single object
+        train_dataset      = train_ds,
+        eval_dataset       = val_ds,
+        data_collator      = collate_fn,
     )
 
     # 7) Fine‑tune (only Q‑Former trainable)
