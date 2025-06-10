@@ -171,7 +171,7 @@ def main():
         eval_dataset=val_ds,
         data_collator=collate_fn,
         processing_class=processor.tokenizer,  # ensures tokenizer is saved
-
+        dataset_text_field="Question"
     )
 
     # 7) Fine‑tune (only Q‑Former trainable)
