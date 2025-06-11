@@ -194,7 +194,6 @@ def main():
             lora_alpha=16,
             lora_dropout=0.05,
             bias="none",
-            task_type="FEATURE_EXTRACTION",  # Q‑Former is transformer‑decoder‑like
             target_modules=[
                 "query", "key", "value",  # attention projections
             ],
