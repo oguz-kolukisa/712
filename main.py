@@ -153,7 +153,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--blip2_opt_name", default="Salesforce/blip2-opt-2.7b",
                         help="Base BLIP‑2 OPT checkpoint")
     parser.add_argument("--output_dir", default="./blip2-llama-vqa-checkpoints-qformer")
-    parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument("--epochs", type=int, default=2)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=2e-5)
     parser.add_argument("--tuning_mode", choices=["full", "lora"], default="lora",
