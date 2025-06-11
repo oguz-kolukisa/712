@@ -1,158 +1,192 @@
 #!/usr/bin/env python
 """
-eval_blip2_llama_vqa_qformer.py
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Evaluates a BLIP-2 + LLaMA-3.1 checkpoint (Q-Former fine-tuned) on **VQA-v2**
-and prints three accuracy scores:
+evaluate_blip2_llama_vqa_qformer.py
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Evaluates a BLIP-2 + LLaMA-3.1 model whose **Q-Former** was fine-tuned on
+VQA-v2 with the companion training script.
 
-    • Overall VQA accuracy
-    • Yes/No accuracy
-    • Number accuracy
-      (Other is shown as an extra line for reference)
-
-Run on a single GPU:
-
-    python eval_blip2_llama_vqa_qformer.py \
-        --ckpt_dir ./blip2-llama-vqa-checkpoints-qformer \
-        --split validation
-
-────────────────────────────────────────────────────────────────────────────────
-Implementation notes
-────────────────────────────────────────────────────────────────────────────────
-* Uses the canonical VQA consensus metric:
-      acc_i = min(# matching answers in GT, 3) / 3
-  with the ten annotator answers provided by the dataset.
-* Categorises questions with the dataset’s built-in **answer_type**
-  field (“yes/no”, “number”, “other”).
-* Prompts are identical to training:
-      "Question: <question>? Answer:"
-* Generates answers greedily with `max_new_tokens=5`.
+Usage
+-----
+python evaluate_blip2_llama_vqa_qformer.py \
+    --model_dir  ./blip2-llama-vqa-checkpoints-qformer \
+    --blip2_opt_name  Salesforce/blip2-opt-2.7b
 """
 
+from __future__ import annotations
+
 import argparse
-import os
 import json
-from collections import defaultdict
+import os
+from pathlib import Path
+from typing import List
 
 import torch
-from torch.utils.data import DataLoader
-
 from datasets import load_dataset
 from transformers import (
+    AutoTokenizer,
     Blip2ForConditionalGeneration,
     Blip2Processor,
 )
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Collator (same as in training, but no ground-truth answer attached)
+# Utilities
 # ───────────────────────────────────────────────────────────────────────────────
 
-def vqa_infer_collate_fn_factory(processor, device):
+
+def build_processor(blip2_opt_name: str, ckpt_dir: Path) -> Blip2Processor:
+    """
+    Re-create the BLIP-2 processor using the *image* sub-processors from the
+    original BLIP-2 checkpoint and the fine-tuned tokenizer from `ckpt_dir`.
+    """
+    proc = Blip2Processor.from_pretrained(blip2_opt_name)
+
+    # Load the tokenizer *saved* by the training script
+    tokenizer = AutoTokenizer.from_pretrained(ckpt_dir, use_fast=True)
+    tokenizer.pad_token = tokenizer.eos_token
+    proc.tokenizer = tokenizer
+    return proc
+
+
+def collate_fn_factory(proc: Blip2Processor):
+    """Make the same collator used for training (no answers in labels)."""
+
     def collate(batch):
-        images    = [ex["image"].convert("RGB") for ex in batch]
+        images = [ex["image"].convert("RGB") for ex in batch]
         questions = [ex["question"].strip() for ex in batch]
 
-        # Ensure every question ends with '?'
-        prompts = [f"Question: {q if q.endswith('?') else q + '?'} Answer:" for q in questions]
+        prompts = []
+        for q in questions:
+            if not q.endswith("?"):
+                q += "?"
+            prompts.append(f"Question: {q} Answer:")
 
-        enc = processor(
+        enc = proc(
             images=images,
             text=prompts,
             padding=True,
             truncation=True,
             return_tensors="pt",
         )
+        return enc, prompts  # keep prompts for answer stripping
 
-        # Pass through extra fields needed for metric
-        enc["answer_list"]  = [ex["answers"] for ex in batch]          # list of 10×str
-        enc["answer_type"]  = [ex["answer_type"] for ex in batch]      # "yes/no", "number", "other"
-        return enc
     return collate
 
-# ───────────────────────────────────────────────────────────────────────────────
-# VQA consensus metric
-# ───────────────────────────────────────────────────────────────────────────────
 
-def vqa_accuracy(pred: str, gts):
+def extract_answers(
+    generated: torch.Tensor, prompts: List[str], tokenizer
+) -> List[str]:
     """
-    pred: str (lower-cased, stripped)
-    gts : list[str] (10 annotator answers, lower-cased, stripped)
+    Decode generated sequences and cut off the prompt part.
     """
-    pred = pred.strip().lower()
-    gts  = [a.strip().lower() for a in gts]
-    matches = sum([pred == a for a in gts])
-    return min(matches, 3) / 3.0    # ∈ {0, 0.33, 0.67, 1.0}
+    txts = tokenizer.batch_decode(generated, skip_special_tokens=True)
+    preds = []
+    for t, p in zip(txts, prompts):
+        # Remove prompt (it should be the prefix)
+        answer = t[len(p) :].strip()
+        # VQA answers are lowercase + no trailing punctuation by convention
+        preds.append(answer.lower().rstrip(" ."))
+    return preds
+
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Main
 # ───────────────────────────────────────────────────────────────────────────────
 
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--model_dir", required=True,
+                        help="Path to the fine-tuned checkpoint directory")
+    parser.add_argument("--blip2_opt_name", default="Salesforce/blip2-opt-2.7b",
+                        help="Original BLIP-2 OPT checkpoint used for training")
+    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--max_new_tokens", type=int, default=5,
+                        help="Max tokens to generate for the answer")
+    parser.add_argument("--device", default=None,
+                        help="Force device id, e.g. 'cuda:1' or 'cpu'")
+    parser.add_argument("--save_results", default=None,
+                        help="Optional JSONL file to dump per-sample results")
+    return parser.parse_args()
+
+
 @torch.no_grad()
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--ckpt_dir", required=True, help="Path to fine-tuned checkpoint dir")
-    parser.add_argument("--split", default="validation", choices=["train", "validation", "test"])
-    parser.add_argument("--batch_size", type=int, default=32)
-    parser.add_argument("--max_new_tokens", type=int, default=5)
-    parser.add_argument("--processor_name_or_path", default="Salesforce/blip2-flan-t5-xl", help="HF repo or local dir that holds the Blip2Processor")
-    args = parser.parse_args()
+    args = parse_args()
+    device = (
+        torch.device(args.device)
+        if args.device
+        else torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # 1) Model & processor ------------------------------------------------------
+    print("🔄  Loading model…")
+    model = Blip2ForConditionalGeneration.from_pretrained(
+        args.model_dir, torch_dtype=torch.float16 if torch.cuda.is_available() else None
+    ).to(device)
+    model.eval()
 
-    # 1) Dataset ────────────────────────────────────────────────────────────────
-    ds = load_dataset(
+    processor = build_processor(args.blip2_opt_name, Path(args.model_dir))
+    collate_fn = collate_fn_factory(processor)
+
+    # 2) Dataset ---------------------------------------------------------------
+    val_ds = load_dataset(
         "HuggingFaceM4/VQAv2",
-        split=args.split,
+        split="validation",
         trust_remote_code=True,
-        storage_options={"client_kwargs": {"timeout": 3600}},
     )
 
-    # 2) Model + processor ──────────────────────────────────────────────────────
-    model      = Blip2ForConditionalGeneration.from_pretrained(args.ckpt_dir).to(device).eval()
-    processor = Blip2Processor.from_pretrained(args.processor_name_or_path)    
-    processor.tokenizer.pad_token = processor.tokenizer.eos_token
-
-    # 3) DataLoader ─────────────────────────────────────────────────────────────
-    dl = DataLoader(
-        ds,
-        batch_size=args.batch_size,
-        num_workers=os.cpu_count() // 2,
-        collate_fn=vqa_infer_collate_fn_factory(processor, device),
+    dataloader = torch.utils.data.DataLoader(
+        val_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_fn
     )
 
-    # 4) Metric accumulation ───────────────────────────────────────────────────
-    running = defaultdict(list)   # {"overall": [...], "yes/no": [...], ...}
+    # 3) Inference loop --------------------------------------------------------
+    num_correct = 0
+    total = 0
+    dumped = []  # optional per-sample logging
 
-    print(f"🚀 Evaluating {args.ckpt_dir} on VQA-v2 {args.split} ({len(ds):,} samples)…")
-    for batch in dl:
-        # a) Generation
-        gen_ids = model.generate(
-            **{k: v.to(device, non_blocking=True) for k, v in batch.items() if k in ["input_ids", "attention_mask", "pixel_values"]},
+    for batch, prompts in dataloader:
+        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+
+        # Generate answers
+        out_ids = model.generate(
+            **batch,
             max_new_tokens=args.max_new_tokens,
+            do_sample=False,
         )
-        preds = processor.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
-        preds = [p.split("Answer:")[-1].strip().lower() for p in preds]  # keep text after prompt
+        preds = extract_answers(out_ids, prompts, processor.tokenizer)
 
-        # b) Metric per sample
-        for pred, gts, atype in zip(preds, batch["answer_list"], batch["answer_type"]):
-            acc = vqa_accuracy(pred, [a["answer"] for a in gts])
-            running["overall"].append(acc)
-            running[atype.lower()].append(acc)
+        # Compare to ground-truth (exact multiple-choice answer)
+        gt = [ex["multiple_choice_answer"].lower() for ex in
+              val_ds.select(range(total, total + len(preds)))]  # fast slice
 
-    # 5) Aggregate and print ────────────────────────────────────────────────────
-    def mean(x): return sum(x) / len(x) if x else 0.0
+        for p, g in zip(preds, gt):
+            if p == g:
+                num_correct += 1
 
-    overall = mean(running["overall"]) * 100
-    yesno   = mean(running["yes/no"]) * 100
-    number  = mean(running["number"]) * 100
-    other   = mean(running["other"]) * 100
+        if args.save_results:
+            for p, g, pr in zip(prompts, gt, preds):
+                dumped.append({"prompt": p, "pred": pr, "gt": g})
 
-    print("\n────────── VQA-v2 Accuracy ──────────")
-    print(f"Overall : {overall:5.2f}%")
-    print(f"Yes/No  : {yesno:5.2f}%")
-    print(f"Number  : {number:5.2f}%")
-    print(f"Other   : {other:5.2f}%")
-    print("──────────────────────────────────────")
+        total += len(preds)
+
+        if total % 2048 == 0:
+            print(f"…{total:6d}/{len(val_ds)} processed – "
+                  f"running acc: {num_correct/total:.3%}")
+
+    # 4) Final report ----------------------------------------------------------
+    acc = num_correct / total
+    print("\n" + "=" * 60)
+    print(f"✅  Validation exact-match accuracy: {acc:.3%} "
+          f"({num_correct}/{total})")
+    print("=" * 60)
+
+    # 5) Optional per-sample dump ---------------------------------------------
+    if args.save_results:
+        with open(args.save_results, "w") as fout:
+            for obj in dumped:
+                fout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        print(f"📝  Detailed results written to {args.save_results}")
+
 
 if __name__ == "__main__":
     main()
