@@ -43,26 +43,6 @@ from transformers import (
     Blip2Processor,
 )
 
-# ───── helper ────────────────────────────────────────────────────────────────
-def to_device(t, device):
-    return t.to(device, non_blocking=True) if torch.is_tensor(t) else t
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-# ── utils.py (or put near the imports) ─────────────────────────────────────────
-def move_to_device(batch, device, non_blocking=True):
-    """
-    Recursively move *all* tensors in a (possibly nested) dict / list / tuple
-    to `device`.  Non-tensor objects are left untouched.
-    """
-    if torch.is_tensor(batch):
-        return batch.to(device, non_blocking=non_blocking)
-    if isinstance(batch, dict):
-        return {k: move_to_device(v, device, non_blocking) for k, v in batch.items()}
-    if isinstance(batch, (list, tuple)):
-        return [move_to_device(x, device, non_blocking) for x in batch]
-    return batch
-
 # ───────────────────────────────────────────────────────────────────────────────
 # Collator (same as in training, but no ground-truth answer attached)
 # ───────────────────────────────────────────────────────────────────────────────
@@ -145,20 +125,12 @@ def main():
 
     print(f"🚀 Evaluating {args.ckpt_dir} on VQA-v2 {args.split} ({len(ds):,} samples)…")
     for batch in dl:
-        batch = move_to_device(batch, device) 
-        model_dev = next(model.parameters()).device
-        input_ids      = to_device(batch.pop("input_ids"),      model_dev)
-        attention_mask = to_device(batch.pop("attention_mask"), model_dev)
-        pixel_values   = to_device(batch.pop("pixel_values"),   model_dev)
-
         # a) Generation
         gen_ids = model.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            pixel_values=pixel_values,
+            **{k: v.to(device, non_blocking=True) for k, v in batch.items() if k in ["input_ids", "attention_mask", "pixel_values"]},
             max_new_tokens=args.max_new_tokens,
         )
-        preds = processor.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)        
+        preds = processor.tokenizer.batch_decode(gen_ids, skip_special_tokens=True)
         preds = [p.split("Answer:")[-1].strip().lower() for p in preds]  # keep text after prompt
 
         # b) Metric per sample
