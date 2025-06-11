@@ -107,6 +107,7 @@ def main():
     correct = total = 0
     offset  = 0
     dumped  = []
+    next_log = args.log_every
     pbar = tqdm(loader, desc="Evaluating", unit="batch")
     for batch, prompts in pbar:
         batch = {k: v.to(dev) if isinstance(v, torch.Tensor) else v
