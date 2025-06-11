@@ -159,10 +159,10 @@ def parse_args() -> argparse.Namespace:
                     help="Base BLIP-2 OPT checkpoint")
     ap.add_argument("--output_dir",
                     default="./blip2-llama-vqa-checkpoints-qformer")
-    ap.add_argument("--epochs",      type=int,   default=5)
+    ap.add_argument("--epochs",      type=int,   default=1)
     ap.add_argument("--batch_size",  type=int,   default=32)
     ap.add_argument("--lr",          type=float, default=2e-5)
-    ap.add_argument("--tuning_mode", choices=["full", "lora"], default="full",
+    ap.add_argument("--tuning_mode", choices=["full", "lora"], default="lora",
                     help="Fine-tune strategy for the Q-Former")
     return ap.parse_args()
 
