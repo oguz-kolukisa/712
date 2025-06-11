@@ -94,7 +94,7 @@ def main():
     parser.add_argument("--split", default="validation", choices=["train", "validation", "test"])
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--max_new_tokens", type=int, default=5)
-    +parser.add_argument("--processor_name_or_path", default="Salesforce/blip2-flan-t5-xl", help="HF repo or local dir that holds the Blip2Processor")
+    parser.add_argument("--processor_name_or_path", default="Salesforce/blip2-flan-t5-xl", help="HF repo or local dir that holds the Blip2Processor")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
