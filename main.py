@@ -203,7 +203,7 @@ def main():
         freeze_everything(model)
         lora_cfg = LoraConfig(
             r=8, lora_alpha=16, lora_dropout=0.05,
-            bias="none", task_type="CAUSAL_LM",
+            bias="none", 
             target_modules=[
                 "query", "key", "value",  # attention projections
 
@@ -226,9 +226,7 @@ def main():
         fp16=torch.cuda.is_available(),
         logging_steps=50,
         save_steps=1000,
-        save_total_limit=2,
-        eval_strategy="steps",
-        eval_steps=5000,
+        save_total_limit=1,
         remove_unused_columns=False,
         dataset_text_field="text",          # irrelevant but required arg
         dataset_kwargs={"skip_prepare_dataset": True},
