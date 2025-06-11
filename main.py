@@ -196,16 +196,13 @@ def main():
             bias="none",
             task_type="CAUSAL_LM",  # Q‑Former is transformer‑decoder‑like
             target_modules=[
-                "q_proj", "k_proj", "v_proj",  # attention projections
-                "out_proj",                      # attn output
-                "fc1", "fc2",                  # MLP layers
+                "query", "key", "value",  # attention projections
+                "output",                      # attn output
+                "output_query", "intermediate_query",                  # MLP layers
             ],
         )
 
         # Inject adapters only into the Q‑Former
-        for name, module in model.qformer.named_modules():
-            print(f"{name:25s} → {module}")
-        exit()
         model.qformer = get_pef_tmodel(model.qformer, lora_cfg)
         model.qformer.print_trainable_parameters()  # sanity log
 
