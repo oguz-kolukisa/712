@@ -219,8 +219,6 @@ def main():
         logging_steps=50,
         save_steps=1000,
         save_total_limit=2,
-        eval_strategy="steps",
-        eval_steps=5000,
         remove_unused_columns=False,
         dataset_text_field="question",
         dataset_kwargs={"skip_prepare_dataset": True},
