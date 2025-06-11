@@ -205,9 +205,8 @@ def main():
             r=8, lora_alpha=16, lora_dropout=0.05,
             bias="none", task_type="CAUSAL_LM",
             target_modules=[
-                "q_proj", "k_proj", "v_proj",
-                "out_proj",
-                "fc1", "fc2",
+                "query", "key", "value",  # attention projections
+
             ],
         )
         model.qformer = get_peft_model(model.qformer, lora_cfg)
