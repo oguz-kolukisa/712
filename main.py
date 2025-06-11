@@ -1,80 +1,73 @@
 #!/usr/bin/env python
 """
-train_blip2_llama_vqa_qformer.py
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Fine‑tune **only the Q‑Former** of a custom BLIP‑2 model with a LLaMA‑3.1
-backend on the VQA‑v2 dataset using Hugging Face TRL’s SFTTrainer.
+Fine-tune only the Q-Former of a BLIP-2 + LLaMA-3.1 model on VQA-v2
+(using TRL SFTTrainer).
 
-Key points
-----------
-* Dataset/loader rewritten to mirror the football‑dataset example:
-    - `VQADataset.__getitem__` returns *pixel_values* + a "text" string.
-    - `collate_fn` stacks `pixel_values`, tokenises the "text", and
-      creates `input_ids / attention_mask / labels`.
-* NEW ➜ Immediately after constructing the BLIP‑2 processor we persist it
-  to `output_dir` so the vision, tokenizer **and** processor config are
-  safely stored even if training later fails.
-* Everything else (LoRA, multi‑GPU, checkpoint resume, etc.) is unchanged.
+Changes vs. previous draft
+--------------------------
+• Adds "<image>" to the LLaMA tokenizer and resizes token embeddings.
+• Saves the *full* processor early.
+• Dataset returns raw PIL images; collate uses processor(images=…, text=…).
+• Masks prompt tokens in the labels (loss on answers only).
 """
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Imports
 # ───────────────────────────────────────────────────────────────────────────────
-import argparse
-import os
+import argparse, os
 from pathlib import Path
-import aiohttp
-import torch
+import aiohttp, torch
 from torch.utils.data import Dataset
 from datasets import load_dataset
 from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    Blip2Config,
-    Blip2ForConditionalGeneration,
-    Blip2Processor,
+    AutoModelForCausalLM, AutoTokenizer,
+    Blip2Config, Blip2ForConditionalGeneration, Blip2Processor,
 )
 from trl import SFTTrainer, SFTConfig
 from transformers.trainer_utils import get_last_checkpoint
 from peft import LoraConfig, get_peft_model
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Helper functions
+# Helper utilities
 # ───────────────────────────────────────────────────────────────────────────────
-
 def freeze_everything(model: torch.nn.Module):
-    """Disable gradient updates for every parameter."""
     for p in model.parameters():
         p.requires_grad = False
 
 
 def freeze_everything_but_qformer(model: Blip2ForConditionalGeneration):
-    """Leave only the Q‑Former trainable."""
-    for name, p in model.named_parameters():
-        p.requires_grad = "qformer" in name
+    for n, p in model.named_parameters():
+        p.requires_grad = "qformer" in n
 
 
-def load_blip2_llama(blip2_opt_name: str, llama_name: str, device: torch.device):
-    """
-    Build a BLIP‑2 model whose vision & Q‑Former come from the OPT
-    checkpoint while the language model is swapped out for LLaMA‑3.1.
-    """
-    # 1) Source checkpoints ----------------------------------------------------
-    blip2_opt = Blip2ForConditionalGeneration.from_pretrained(blip2_opt_name)
-    llama_model = AutoModelForCausalLM.from_pretrained(llama_name)
-    llama_tok   = AutoTokenizer.from_pretrained(llama_name, use_fast=True)
+def load_blip2_llama(blip2_opt_name: str, llama_name: str, device):
+    # 1) Load source checkpoints ------------------------------------------------
+    blip2_opt  = Blip2ForConditionalGeneration.from_pretrained(blip2_opt_name)
+    llama_lm   = AutoModelForCausalLM.from_pretrained(llama_name)
+    llama_tok  = AutoTokenizer.from_pretrained(llama_name, use_fast=True)
 
-    # 2) Merge configs ---------------------------------------------------------
+    # 2) Ensure "<image>" token is present -------------------------------------
+    if "<image>" not in llama_tok.get_vocab():
+        llama_tok.add_special_tokens({"additional_special_tokens": ["<image>"]})
+    image_tok_id = llama_tok.convert_tokens_to_ids("<image>")
+
+    # 3) Merge configs ----------------------------------------------------------
     new_cfg = Blip2Config.from_dict(blip2_opt.config.to_dict())
-    new_cfg.text_config = llama_model.config  # plug LLaMA text config
+    new_cfg.text_config    = llama_lm.config
+    new_cfg.image_token_id = image_tok_id
 
-    # 3) Fresh shell & weight transfer ----------------------------------------
+    # 4) Fresh BLIP-2 shell & weight transfer ----------------------------------
     model = Blip2ForConditionalGeneration(new_cfg)
     model.vision_model.load_state_dict(blip2_opt.vision_model.state_dict())
     model.qformer.load_state_dict(blip2_opt.qformer.state_dict())
-    model.language_model.load_state_dict(llama_model.state_dict())
+    model.language_model.load_state_dict(llama_lm.state_dict())
 
-    # 4) Processor: keep BLIP‑2 processors, swap tokenizer ---------------------
+    # 5) Resize embeddings to fit new vocab ------------------------------------
+    needed = len(llama_tok)
+    if model.get_input_embeddings().weight.size(0) < needed:
+        model.resize_token_embeddings(needed)
+
+    # 6) Build processor (vision from BLIP-2, tokenizer = patched LLaMA) -------
     processor = Blip2Processor.from_pretrained(blip2_opt_name)
     processor.tokenizer = llama_tok
     processor.tokenizer.pad_token = processor.tokenizer.eos_token
@@ -83,154 +76,111 @@ def load_blip2_llama(blip2_opt_name: str, llama_name: str, device: torch.device)
     return model, processor
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Dataset
+# Dataset (returns PIL image + prompt string)
 # ───────────────────────────────────────────────────────────────────────────────
 class VQADataset(Dataset):
-    """
-    *Exactly* mirrors the football‑dataset style requested:
-
-        encoding = processor(images=item["image"], ...)
-        encoding["text"] = item["text"]
-    """
-
-    def __init__(self, hf_split, processor):
-        self.dataset   = hf_split     # raw Hugging Face split
-        self.processor = processor
+    def __init__(self, hf_split):
+        self.data = hf_split
 
     def __len__(self):
-        return len(self.dataset)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        item = self.dataset[idx]
-
-        # Vision preprocessing (batch dim removed)
-        encoding = self.processor(
-            images=item["image"].convert("RGB"),
-            padding="max_length",
-            return_tensors="pt",
-        )
-        encoding = {k: v.squeeze() for k, v in encoding.items()}  # drop batch dim
-
-        # Build the textual target in one string
-        question = item["question"].strip()
-        if not question.endswith("?"):
-            question += "?"
-        answer = item["multiple_choice_answer"].strip()
-
-        # SINGLE field "text" (just like the caption example)
-        encoding["text"] = f"Question: {question} Answer: {answer}"
-        return encoding
+        ex = self.data[idx]
+        q  = ex["question"].strip()
+        if not q.endswith("?"):
+            q += "?"
+        prompt = f"Question: {q} Answer:"          # model should generate answer
+        ans    = ex["multiple_choice_answer"].strip()
+        return {
+            "image":  ex["image"].convert("RGB"),
+            "prompt": prompt,
+            "answer": ans,
+        }
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Collate function
+# Collate
 # ───────────────────────────────────────────────────────────────────────────────
-
-def make_vqa_collate_fn(processor):
-    """
-    Stacks `pixel_values`, tokenises the "text" field, and builds labels
-    identical to `input_ids` (causal‑LM style).
-    """
-
+def make_collate_fn(proc):
     def collate(batch):
-        processed = {}
-
-        # 1) Stack vision tensors ---------------------------------------------
-        processed["pixel_values"] = torch.stack([b["pixel_values"] for b in batch])
-
-        # 2) Tokenise text -----------------------------------------------------
-        text_inputs = processor.tokenizer(
-            [b["text"] for b in batch],
+        # Use processor to inject <image> token and produce pixel_values
+        enc = proc(
+            images=[b["image"] for b in batch],
+            text=[f'{b["prompt"]} {b["answer"]}' for b in batch],
             padding=True,
-            truncation=True,
             return_tensors="pt",
         )
-        processed["input_ids"]      = text_inputs["input_ids"]
-        processed["attention_mask"] = text_inputs["attention_mask"]
 
-        # 3) Labels = input_ids (no masking this time) -------------------------
-        processed["labels"] = text_inputs["input_ids"].clone()
-        return processed
-
+        # Build labels: mask prompt tokens
+        labels = enc["input_ids"].clone()
+        pad_id = proc.tokenizer.pad_token_id
+        for i, (prompt, _) in enumerate(
+            zip([b["prompt"] for b in batch], batch)
+        ):
+            n_prompt = len(proc.tokenizer(prompt, add_special_tokens=False).input_ids)
+            labels[i, :n_prompt] = -100
+        labels[labels == pad_id] = -100
+        enc["labels"] = labels
+        return enc
     return collate
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Arg‑parse & main
+# Main
 # ───────────────────────────────────────────────────────────────────────────────
-
-def parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--llama_name",
-                    default="meta-llama/Llama-3.1-8B-Instruct",
-                    help="HF model ID or local path to LLaMA-3.1")
-    ap.add_argument("--blip2_opt_name",
-                    default="Salesforce/blip2-opt-2.7b",
-                    help="Base BLIP-2 OPT checkpoint")
-    ap.add_argument("--output_dir",
-                    default="./blip2-llama-vqa-checkpoints-qformer")
-    ap.add_argument("--epochs",      type=int,   default=5)
-    ap.add_argument("--batch_size",  type=int,   default=32)
-    ap.add_argument("--lr",          type=float, default=2e-5)
-    ap.add_argument("--tuning_mode", choices=["full", "lora"], default="full",
-                    help="Fine‑tune strategy for the Q‑Former")
-    return ap.parse_args()
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--llama_name",      default="meta-llama/Llama-3.1-8B-Instruct")
+    p.add_argument("--blip2_opt_name",  default="Salesforce/blip2-opt-2.7b")
+    p.add_argument("--output_dir",      default="./blip2-llama-vqa-checkpoints-qformer")
+    p.add_argument("--epochs", type=int, default=1)
+    p.add_argument("--batch_size", type=int, default=32)
+    p.add_argument("--lr", type=float,  default=4e-5)
+    p.add_argument("--tuning_mode", choices=["full", "lora"], default="lora")
+    p.add_argument("--max_steps",   type=int,   default=-1,
+                     help="Terminate training after this many update steps "
+                          "(overrides --epochs when > 0)")
+    return p.parse_args()
 
 
 def main():
     args = parse_args()
-
-    # Rank / device ------------------------------------------------------------
     local_rank = int(os.getenv("LOCAL_RANK", 0))
-    device = torch.device(f"cuda:{local_rank}"
-                          if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
-    # 1) Raw splits ------------------------------------------------------------
-    train_raw = load_dataset(
-        "HuggingFaceM4/VQAv2",
-        split="train",
-        trust_remote_code=True,
-        storage_options={"client_kwargs":
-                         {"timeout": aiohttp.ClientTimeout(total=3600)}},
-    )
-    val_raw = load_dataset(
-        "HuggingFaceM4/VQAv2",
-        split="validation",
-        trust_remote_code=True,
-        storage_options={"client_kwargs":
-                         {"timeout": aiohttp.ClientTimeout(total=3600)}},
-    )
+    # 1) HF splits -------------------------------------------------------------
+    train_raw = load_dataset("HuggingFaceM4/VQAv2", split="train",
+                             trust_remote_code=True,
+                             storage_options={"client_kwargs":
+                                 {"timeout": aiohttp.ClientTimeout(total=3600)}})
+    val_raw   = load_dataset("HuggingFaceM4/VQAv2", split="validation",
+                             trust_remote_code=True,
+                             storage_options={"client_kwargs":
+                                 {"timeout": aiohttp.ClientTimeout(total=3600)}})
 
     # 2) Model & processor -----------------------------------------------------
-    model, processor = load_blip2_llama(
-        args.blip2_opt_name, args.llama_name, device
-    )
+    model, processor = load_blip2_llama(args.blip2_opt_name, args.llama_name, device)
 
-    # NEW ➜ Save the processor immediately, so it's always available -----------
+    # Save processor early so evaluation always finds it
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
     processor.save_pretrained(args.output_dir)
 
-    # 3) Tune mode -------------------------------------------------------------
+    # 3) Tuning mode -----------------------------------------------------------
     if args.tuning_mode == "full":
         freeze_everything_but_qformer(model)
-    else:  # LoRA adapters inside Q‑Former
+    else:
         freeze_everything(model)
-        lora_cfg = LoraConfig(
-            r=8, lora_alpha=16, lora_dropout=0.05,
-            bias="none", task_type="CAUSAL_LM",
-            target_modules=[
-                "q_proj", "k_proj", "v_proj",
-                "out_proj",
-                "fc1", "fc2",
-            ],
-        )
+        lora_cfg = LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05,
+                              bias="none",
+                              target_modules=[ "query", "key", "value"])
         model.qformer = get_peft_model(model.qformer, lora_cfg)
         model.qformer.print_trainable_parameters()
 
-    # 4) Dataset wrappers + collate -------------------------------------------
-    train_ds = VQADataset(train_raw, processor)
-    val_ds   = VQADataset(val_raw,   processor)
-    collate_fn = make_vqa_collate_fn(processor)
+    # 4) Datasets + collate ----------------------------------------------------
+    train_ds = VQADataset(train_raw)
+    val_ds   = VQADataset(val_raw)
+    collate  = make_collate_fn(processor)
 
-    # 5) SFT config ------------------------------------------------------------
+    # 5) Trainer ---------------------------------------------------------------
     sft_cfg = SFTConfig(
         output_dir=args.output_dir,
         per_device_train_batch_size=args.batch_size,
@@ -243,28 +193,20 @@ def main():
         eval_strategy="steps",
         eval_steps=5000,
         remove_unused_columns=False,
-        dataset_text_field="text",          # irrelevant but required arg
         dataset_kwargs={"skip_prepare_dataset": True},
+        max_steps=args.max_steps,
     )
+    trainer = SFTTrainer(model=model, args=sft_cfg,
+                         train_dataset=train_ds,
+                         eval_dataset=val_ds,
+                         data_collator=collate)
 
-    # 6) Trainer ---------------------------------------------------------------
-    trainer = SFTTrainer(
-        model=model,
-        args=sft_cfg,
-        train_dataset=train_ds,
-        eval_dataset=val_ds,
-        data_collator=collate_fn,
-    )
-
-    # 7) Resume or train -------------------------------------------------------
     ckpt = get_last_checkpoint(args.output_dir) if os.path.isdir(args.output_dir) else None
     trainer.train(resume_from_checkpoint=ckpt) if ckpt else trainer.train()
 
-    # 8) Save final model ------------------------------------------------------
     trainer.save_model(args.output_dir)
-
     if local_rank == 0:
-        print(f"\n✅  Fine‑tuned Q‑Former saved to {args.output_dir}\n")
+        print(f"\n✅  Q-Former fine-tuned & saved to {args.output_dir}\n")
 
 
 if __name__ == "__main__":
