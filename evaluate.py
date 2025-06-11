@@ -43,6 +43,20 @@ from transformers import (
     Blip2Processor,
 )
 
+# ── utils.py (or put near the imports) ─────────────────────────────────────────
+def move_to_device(batch, device, non_blocking=True):
+    """
+    Recursively move *all* tensors in a (possibly nested) dict / list / tuple
+    to `device`.  Non-tensor objects are left untouched.
+    """
+    if torch.is_tensor(batch):
+        return batch.to(device, non_blocking=non_blocking)
+    if isinstance(batch, dict):
+        return {k: move_to_device(v, device, non_blocking) for k, v in batch.items()}
+    if isinstance(batch, (list, tuple)):
+        return [move_to_device(x, device, non_blocking) for x in batch]
+    return batch
+
 # ───────────────────────────────────────────────────────────────────────────────
 # Collator (same as in training, but no ground-truth answer attached)
 # ───────────────────────────────────────────────────────────────────────────────
@@ -125,6 +139,7 @@ def main():
 
     print(f"🚀 Evaluating {args.ckpt_dir} on VQA-v2 {args.split} ({len(ds):,} samples)…")
     for batch in dl:
+        batch = move_to_device(batch, device) 
         # a) Generation
         gen_ids = model.generate(
             **{k: v for k, v in batch.items() if k in ["input_ids", "attention_mask", "pixel_values"]},
