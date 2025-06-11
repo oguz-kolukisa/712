@@ -203,7 +203,7 @@ def main():
         )
 
         # Inject adapters only into the Q‑Former
-        model.qformer = get_pef_tmodel(model.qformer, lora_cfg)
+        model.qformer = get_peft_model(model.qformer, lora_cfg)
         model.qformer.print_trainable_parameters()  # sanity log
 
     # 4) Data collator
