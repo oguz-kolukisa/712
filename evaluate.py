@@ -17,7 +17,7 @@ import json
 import os
 import re
 from pathlib import Path
-
+import aiohttp
 import torch
 from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
