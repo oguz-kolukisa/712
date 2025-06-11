@@ -2,16 +2,19 @@
 """
 train_blip2_llama_vqa_qformer.py
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Fine-tune **only the Q-Former** of a custom BLIP-2 model with a LLaMA-3.1
-backend on the VQA-v2 dataset using Hugging Face TRL’s SFTTrainer.
+Fine‑tune **only the Q‑Former** of a custom BLIP‑2 model with a LLaMA‑3.1
+backend on the VQA‑v2 dataset using Hugging Face TRL’s SFTTrainer.
 
 Key points
 ----------
-* Dataset/loader rewritten to mirror the football-dataset example:
-    - `VQADataset.__getitem__` returns *pixel_values* + a `"text"` string.
-    - `collate_fn` stacks `pixel_values`, tokenises the `"text"`, and
+* Dataset/loader rewritten to mirror the football‑dataset example:
+    - `VQADataset.__getitem__` returns *pixel_values* + a "text" string.
+    - `collate_fn` stacks `pixel_values`, tokenises the "text", and
       creates `input_ids / attention_mask / labels`.
-* Everything else (LoRA, multi-GPU, checkpoint resume, etc.) is unchanged.
+* NEW ➜ Immediately after constructing the BLIP‑2 processor we persist it
+  to `output_dir` so the vision, tokenizer **and** processor config are
+  safely stored even if training later fails.
+* Everything else (LoRA, multi‑GPU, checkpoint resume, etc.) is unchanged.
 """
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -38,6 +41,7 @@ from peft import LoraConfig, get_peft_model
 # ───────────────────────────────────────────────────────────────────────────────
 # Helper functions
 # ───────────────────────────────────────────────────────────────────────────────
+
 def freeze_everything(model: torch.nn.Module):
     """Disable gradient updates for every parameter."""
     for p in model.parameters():
@@ -45,15 +49,15 @@ def freeze_everything(model: torch.nn.Module):
 
 
 def freeze_everything_but_qformer(model: Blip2ForConditionalGeneration):
-    """Leave only the Q-Former trainable."""
+    """Leave only the Q‑Former trainable."""
     for name, p in model.named_parameters():
         p.requires_grad = "qformer" in name
 
 
 def load_blip2_llama(blip2_opt_name: str, llama_name: str, device: torch.device):
     """
-    Build a BLIP-2 model whose vision & Q-Former come from the OPT
-    checkpoint while the language model is swapped out for LLaMA-3.1.
+    Build a BLIP‑2 model whose vision & Q‑Former come from the OPT
+    checkpoint while the language model is swapped out for LLaMA‑3.1.
     """
     # 1) Source checkpoints ----------------------------------------------------
     blip2_opt = Blip2ForConditionalGeneration.from_pretrained(blip2_opt_name)
@@ -70,7 +74,7 @@ def load_blip2_llama(blip2_opt_name: str, llama_name: str, device: torch.device)
     model.qformer.load_state_dict(blip2_opt.qformer.state_dict())
     model.language_model.load_state_dict(llama_model.state_dict())
 
-    # 4) Processor: keep BLIP-2 processors, swap tokenizer ---------------------
+    # 4) Processor: keep BLIP‑2 processors, swap tokenizer ---------------------
     processor = Blip2Processor.from_pretrained(blip2_opt_name)
     processor.tokenizer = llama_tok
     processor.tokenizer.pad_token = processor.tokenizer.eos_token
@@ -83,11 +87,12 @@ def load_blip2_llama(blip2_opt_name: str, llama_name: str, device: torch.device)
 # ───────────────────────────────────────────────────────────────────────────────
 class VQADataset(Dataset):
     """
-    *Exactly* mirrors the football-dataset style requested:
+    *Exactly* mirrors the football‑dataset style requested:
 
         encoding = processor(images=item["image"], ...)
         encoding["text"] = item["text"]
     """
+
     def __init__(self, hf_split, processor):
         self.dataset   = hf_split     # raw Hugging Face split
         self.processor = processor
@@ -119,11 +124,13 @@ class VQADataset(Dataset):
 # ───────────────────────────────────────────────────────────────────────────────
 # Collate function
 # ───────────────────────────────────────────────────────────────────────────────
+
 def make_vqa_collate_fn(processor):
     """
-    Stacks `pixel_values`, tokenises the `"text"` field, and builds labels
-    identical to `input_ids` (causal-LM style).
+    Stacks `pixel_values`, tokenises the "text" field, and builds labels
+    identical to `input_ids` (causal‑LM style).
     """
+
     def collate(batch):
         processed = {}
 
@@ -147,8 +154,9 @@ def make_vqa_collate_fn(processor):
     return collate
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Arg-parse & main
+# Arg‑parse & main
 # ───────────────────────────────────────────────────────────────────────────────
+
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser()
     ap.add_argument("--llama_name",
@@ -159,11 +167,11 @@ def parse_args() -> argparse.Namespace:
                     help="Base BLIP-2 OPT checkpoint")
     ap.add_argument("--output_dir",
                     default="./blip2-llama-vqa-checkpoints-qformer")
-    ap.add_argument("--epochs",      type=int,   default=1)
+    ap.add_argument("--epochs",      type=int,   default=5)
     ap.add_argument("--batch_size",  type=int,   default=32)
     ap.add_argument("--lr",          type=float, default=2e-5)
-    ap.add_argument("--tuning_mode", choices=["full", "lora"], default="lora",
-                    help="Fine-tune strategy for the Q-Former")
+    ap.add_argument("--tuning_mode", choices=["full", "lora"], default="full",
+                    help="Fine‑tune strategy for the Q‑Former")
     return ap.parse_args()
 
 
@@ -196,17 +204,22 @@ def main():
         args.blip2_opt_name, args.llama_name, device
     )
 
+    # NEW ➜ Save the processor immediately, so it's always available -----------
+    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    processor.save_pretrained(args.output_dir)
+
     # 3) Tune mode -------------------------------------------------------------
     if args.tuning_mode == "full":
         freeze_everything_but_qformer(model)
-    else:  # LoRA adapters inside Q-Former
+    else:  # LoRA adapters inside Q‑Former
         freeze_everything(model)
         lora_cfg = LoraConfig(
             r=8, lora_alpha=16, lora_dropout=0.05,
-            bias="none", 
+            bias="none", task_type="CAUSAL_LM",
             target_modules=[
-                "query", "key", "value",  # attention projections
-
+                "q_proj", "k_proj", "v_proj",
+                "out_proj",
+                "fc1", "fc2",
             ],
         )
         model.qformer = get_peft_model(model.qformer, lora_cfg)
@@ -226,7 +239,9 @@ def main():
         fp16=torch.cuda.is_available(),
         logging_steps=50,
         save_steps=1000,
-        save_total_limit=1,
+        save_total_limit=2,
+        eval_strategy="steps",
+        eval_steps=5000,
         remove_unused_columns=False,
         dataset_text_field="text",          # irrelevant but required arg
         dataset_kwargs={"skip_prepare_dataset": True},
@@ -245,13 +260,11 @@ def main():
     ckpt = get_last_checkpoint(args.output_dir) if os.path.isdir(args.output_dir) else None
     trainer.train(resume_from_checkpoint=ckpt) if ckpt else trainer.train()
 
-    # 8) Save ------------------------------------------------------------------
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+    # 8) Save final model ------------------------------------------------------
     trainer.save_model(args.output_dir)
-    processor.tokenizer.save_pretrained(args.output_dir)
 
     if local_rank == 0:
-        print(f"\n✅  Fine-tuned Q-Former saved to {args.output_dir}\n")
+        print(f"\n✅  Fine‑tuned Q‑Former saved to {args.output_dir}\n")
 
 
 if __name__ == "__main__":
