@@ -162,11 +162,9 @@ def main():
         adam_beta2=0.999,
         weight_decay=a.weight_decay,
         fp16=torch.cuda.is_available(),
-        logging_steps=50,
+        logging_steps=200,
         save_steps=1000,
         save_total_limit=2,
-        eval_strategy="steps",
-        eval_steps=5000,
         remove_unused_columns=False,
         dataset_kwargs={"skip_prepare_dataset": True},
     )
