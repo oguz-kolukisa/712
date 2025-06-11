@@ -66,7 +66,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--model_dir", required=True, help="Fine-tuned checkpoint")
     p.add_argument("--blip2_opt_name", default="Salesforce/blip2-opt-2.7b")
-    p.add_argument("--batch_size", type=int, default=32)
+    p.add_argument("--batch_size", type=int, default=128)
     p.add_argument("--max_new_tokens", type=int, default=5)
     p.add_argument("--device", default=None)
     p.add_argument("--save_results", default=None,
