@@ -34,6 +34,16 @@ _ARTICLES = re.compile(r"\b(a|an|the)\b", re.UNICODE)
 _PUNCT    = re.compile(r"[^\w\s]", re.UNICODE)
 
 
+# --- add this helper right after imports --------------------------------------
+def get_image_token(tokenizer, image_token_id):
+    """
+    Return the *string* corresponding to `image_token_id`, e.g. "<image>".
+    """
+    tok = tokenizer.decode([image_token_id]).strip()
+    # If the tokeniser puts a leading space (common with LLaMA), drop it
+    return tok.lstrip()
+
+
 def normalise_answer(ans: str) -> str:
     """Lower-case, strip punctuation/articles/extra spaces."""
     ans = ans.lower()
@@ -56,17 +66,18 @@ def vqa_accuracy(pred: str, gt_answers) -> float:
 # ───────────────────────────────────────────────────────────────────────────────
 # Dataset & collate for *inference* (prompt only, no answers)
 # ───────────────────────────────────────────────────────────────────────────────
+
 class VQAEvalDataset(Dataset):
     """
-    Each item provides:
-      • pixel_values (vision encoding)
-      • input_ids / attention_mask for the prompt "Question: … Answer:"
-      • answers  (list of 10 ground-truth answers for scoring)
+    Each item yields:
+        • raw PIL image
+        • prompt string that *includes one <image> token*
+        • list of the 10 human answers
     """
-
-    def __init__(self, hf_split, processor):
-        self.data      = hf_split
-        self.processor = processor
+    def __init__(self, hf_split, processor, image_tok_str):
+        self.data         = hf_split
+        self.processor    = processor
+        self.image_tok    = image_tok_str
 
     def __len__(self):
         return len(self.data)
@@ -74,42 +85,42 @@ class VQAEvalDataset(Dataset):
     def __getitem__(self, idx):
         ex = self.data[idx]
 
-        # Prompt without the answer
-        question = ex["question"].strip()
-        if not question.endswith("?"):
-            question += "?"
-        prompt = f"Question: {question} Answer:"
+        q = ex["question"].strip()
+        if not q.endswith("?"):
+            q += "?"
+        # <image> token first, then the question
+        prompt = f"{self.image_tok} Question: {q} Answer:"
 
-        enc = self.processor(
-            images=ex["image"].convert("RGB"),
-            text=prompt,
-            return_tensors="pt",
-            padding="max_length",
-        )
-        enc = {k: v.squeeze() for k, v in enc.items()}  # drop batch dim
-
-        # Ground-truth answers list (10 strings)
+        # answers list (10 strings)
         gt_answers = (
             [d["answer"] for d in ex["answers"]]
             if isinstance(ex["answers"][0], dict)
             else ex["answers"]
         )
-        enc["answers"] = gt_answers
-        return enc
+
+        return {
+            "image":   ex["image"].convert("RGB"),
+            "prompt":  prompt,
+            "answers": gt_answers,
+        }
 
 
+# ───────────────────────────────────────────────────────────────────────────────
+# Collate (build the batch with the processor)
+# ───────────────────────────────────────────────────────────────────────────────
 def collate_fn(batch):
-    pixel_values   = torch.stack([b["pixel_values"] for b in batch])
-    input_ids      = torch.stack([b["input_ids"]      for b in batch])
-    attention_mask = torch.stack([b["attention_mask"] for b in batch])
-    answers_list   = [b["answers"] for b in batch]
-    return {
-        "pixel_values":   pixel_values,
-        "input_ids":      input_ids,
-        "attention_mask": attention_mask,
-        "answers":        answers_list,
-    }
+    images  = [b["image"]  for b in batch]
+    prompts = [b["prompt"] for b in batch]
+    answers = [b["answers"] for b in batch]
 
+    enc = processor(
+        images=images,
+        text=prompts,
+        padding=True,
+        return_tensors="pt"
+    )
+    enc["answers"] = answers
+    return enc
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Main evaluation
@@ -148,12 +159,18 @@ def main():
         trust_remote_code=True,
         storage_options={"client_kwargs": {"timeout": aiohttp.ClientTimeout(total=3600)}},
     )
-    eval_ds  = VQAEvalDataset(split, processor)
-    loader   = DataLoader(eval_ds,
-                          batch_size=args.batch_size,
-                          shuffle=False,
-                          collate_fn=collate_fn,
-                          num_workers=4)
+    image_tok_str = get_image_token(processor.tokenizer,
+                                model.config.image_token_id)
+
+    eval_ds = VQAEvalDataset(split, processor, image_tok_str)
+    loader  = DataLoader(
+        eval_ds,
+        batch_size=args.batch_size,
+        shuffle=False,
+        collate_fn=collate_fn,
+        num_workers=4,
+    )
+    
 
     model.eval()
     device = torch.device(args.device)
