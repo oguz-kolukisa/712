@@ -197,7 +197,6 @@ def main():
             task_type="CAUSAL_LM",  # Q‑Former is transformer‑decoder‑like
             target_modules=[
                 "query", "key", "value",  # attention projections
-                "output_query",                  # MLP layers
             ],
         )
 
