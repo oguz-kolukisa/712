@@ -4,8 +4,8 @@ evaluate_vqa.py
 ~~~~~~~~~~~~~~~
 Compute VQA-v2 accuracy for a fine-tuned BLIP-2 + LLaMA model.
 
-Usage
------
+Example
+-------
 python evaluate_vqa.py \
     --model_path ./blip2-llama-vqa-checkpoints-qformer \
     --split validation \
@@ -49,13 +49,11 @@ def vqa_acc(pred: str, gts) -> float:
 
 
 # ───────────────────────────────────────────────────────────────────────────────
-# Dataset: prompt *with* one <image> token
+# Dataset (NO manual <image> token – processor does it)
 # ───────────────────────────────────────────────────────────────────────────────
 class VQAEvalDataset(Dataset):
-    def __init__(self, hf_split, processor, image_tok):
-        self.data      = hf_split
-        self.processor = processor
-        self.img_tok   = image_tok
+    def __init__(self, hf_split):
+        self.data = hf_split
 
     def __len__(self):
         return len(self.data)
@@ -65,7 +63,7 @@ class VQAEvalDataset(Dataset):
         q = ex["question"].strip()
         if not q.endswith("?"):
             q += "?"
-        prompt = f"{self.img_tok} Question: {q} Answer:"
+        prompt = f"Question: {q} Answer:"      # no image token here!
 
         gt_answers = (
             [d["answer"] for d in ex["answers"]]
@@ -86,12 +84,13 @@ class VQAEvalDataset(Dataset):
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--model_path", required=True,
-                   help="Checkpoint directory with fine-tuned weights + processor")
+                   help="Checkpoint directory with fine-tuned weights")
     p.add_argument("--split", default="validation",
-                   choices=["train", "validation"], help="VQA-v2 split to score")
+                   choices=["train", "validation"], help="VQA-v2 split")
     p.add_argument("--batch_size", type=int, default=32)
     p.add_argument("--max_new_tokens", type=int, default=5)
-    p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    p.add_argument("--device",
+                   default="cuda" if torch.cuda.is_available() else "cpu")
     return p.parse_args()
 
 
@@ -107,31 +106,31 @@ def main():
         args.model_path, device_map="auto"
     )
 
+    # The folder must contain a *full* processor; if not, fall back
     try:
         processor = Blip2Processor.from_pretrained(args.model_path)
     except OSError:
-        # folder only has tokenizer → pull vision pre-processor from base model
-        print("⚠️  No vision pre-processor in checkpoint; "
-              "falling back to Salesforce/blip2-opt-2.7b defaults.")
+        print("⚠️  Processor incomplete; loading vision cfg "
+              "from Salesforce/blip2-opt-2.7b")
         processor = Blip2Processor.from_pretrained("Salesforce/blip2-opt-2.7b")
-        processor.tokenizer = AutoTokenizer.from_pretrained(args.model_path, use_fast=True)
-
+        processor.tokenizer = AutoTokenizer.from_pretrained(
+            args.model_path, use_fast=True
+        )
     processor.tokenizer.pad_token = processor.tokenizer.eos_token
-    image_tok_id  = model.config.image_token_id
-    image_tok_str = processor.tokenizer.decode([image_tok_id]).strip().lstrip()
+    pad_id = processor.tokenizer.pad_token_id
 
-    # 2) Dataset & DataLoader ---------------------------------------------------
+    # 2) Dataset & loader -------------------------------------------------------
     split = load_dataset(
         "HuggingFaceM4/VQAv2",
         split=args.split,
         trust_remote_code=True,
         storage_options={"client_kwargs": {"timeout": aiohttp.ClientTimeout(total=3600)}},
     )
-    eval_ds = VQAEvalDataset(split, processor, image_tok_str)
+    eval_ds = VQAEvalDataset(split)
 
-    def make_collate_fn(processor):
+    def make_collate_fn(proc):
         def collate(batch):
-            enc = processor(
+            enc = proc(
                 images=[b["image"] for b in batch],
                 text=[b["prompt"] for b in batch],
                 padding=True,
@@ -169,12 +168,12 @@ def main():
             gen_ids, skip_special_tokens=True
         )
 
-        # length of prompt in tokens → trim to isolate generated answer
-        prompt_lens = (batch["input_ids"] != processor.tokenizer.pad_token_id).sum(dim=1)
+        # Prompt length = non-pad tokens in original input_ids
+        prompt_lens = (batch["input_ids"] != pad_id).sum(dim=1)
 
         for i, full_pred in enumerate(decoded):
             prompt_text = processor.tokenizer.decode(
-                batch["input_ids"][i, :prompt_lens[i]], skip_special_tokens=True
+                gen_ids[i][:prompt_lens[i]], skip_special_tokens=True
             )
             pred_ans = full_pred[len(prompt_text):].strip()
             total_acc += vqa_acc(pred_ans, batch["answers"][i])
@@ -183,7 +182,8 @@ def main():
         if (step + 1) % 100 == 0:
             print(f"Step {step+1:>4}: running acc = {total_acc / n:.4%}")
 
-    print(f"\n✅  {args.split} accuracy: {total_acc / n:.4%} ({n} questions)\n")
+    print(f"\n✅  {args.split} accuracy: {total_acc / n:.4%} "
+          f"({n} questions)\n")
 
 
 if __name__ == "__main__":
