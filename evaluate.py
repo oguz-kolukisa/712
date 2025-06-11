@@ -19,9 +19,17 @@ import torch
 from datasets import load_dataset
 from transformers import AutoTokenizer, Blip2ForConditionalGeneration, Blip2Processor
 from tqdm.auto import tqdm   # ← progress bar
-
+import random
 # -----------------------------------------------------------------------------
 
+def strip_prompt_to_question(prompt: str) -> str:
+    """Remove the 'Question:' / 'Answer:' boiler-plate."""
+    q = prompt
+    if q.startswith("Question:"):
+        q = q[len("Question:"):].lstrip()
+    if q.endswith(" Answer:"):
+        q = q[:-len(" Answer:")]
+    return q.strip()
 
 def build_processor(blip2_opt_name: str, ckpt_dir: Path) -> Blip2Processor:
     """Re-create processor; use saved tokenizer and set pad token."""
@@ -63,6 +71,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default=None)
     p.add_argument("--save_results", default=None,
                    help="Dump predictions to JSONL")
+    p.add_argument("--log_every", type=int, default=1000,
+                   help="Print an example Q/A every N validation items")
     return p.parse_args()
 
 
@@ -109,16 +119,30 @@ def main():
 
         preds = extract_answers(out, prompts, proc.tokenizer)
         gts   = [val_ds[i]["multiple_choice_answer"].lower()
-                 for i in range(offset, offset + len(preds))]
-        offset += len(preds)
+                 for i in range(total, total + len(preds))]
 
+        # ── accuracy bookkeeping ────────────────────────────────────────────
         correct += sum(p == g for p, g in zip(preds, gts))
         total   += len(preds)
         pbar.set_postfix(acc=f"{correct/total:.3%}")
 
+        # ── log results if requested ────────────────────────────────────────
         if args.save_results:
-            dumped.extend({"prompt": pr, "pred": p, "gt": g}
+            dumped.extend({"prompt": pr, "question": strip_prompt_to_question(pr),
+                           "pred": p, "gt": g}
                           for pr, p, g in zip(prompts, preds, gts))
+
+        # ── EXAMPLE LOGGING every N items ───────────────────────────────────
+        while total >= next_log:
+            # pick a random sample *inside the current batch* to display
+            idx = random.randrange(len(prompts))
+            print("\n" + "-"*50)
+            print(f"📌 Example at {next_log} processed items:")
+            print(f"Q: {strip_prompt_to_question(prompts[idx])}")
+            print(f"GT: {gts[idx]}")
+            print(f"PR: {preds[idx]}")
+            print("-"*50 + "\n")
+            next_log += args.log_every
 
     # 5) final
     acc = correct / total
