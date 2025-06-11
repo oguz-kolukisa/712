@@ -15,15 +15,28 @@ def norm(txt): return re.sub(r"\s+", " ", _ARTICLES.sub(" ", _PUNCT.sub(" ", txt
 def vqa_acc(pred, gts): return min(sum(norm(pred) == norm(a) for a in gts) / 3.0, 1.0)
 
 # ─── Dataset ─────────────────────────────────────────────────────────────────
-class VQAEvalDS(Dataset):
-    def __init__(self, split): self.data = split
-    def __len__(self): return len(self.data)
-    def __getitem__(self, i):
-        ex = self.data[i]
-        q  = ex["question"].strip() + ("" if ex["question"].strip().endswith("?") else "?")
-        prompt = f"Question: {q} Answer:"
-        gts = [d["answer"] for d in ex["answers"]] if isinstance(ex["answers"][0], dict) else ex["answers"]
-        return {"image": ex["image"].convert("RGB"), "prompt": prompt, "answers": gts}
+class VQAEvalDataset(Dataset):
+    def __init__(self, hf_split, img_tok):
+        self.data    = hf_split
+        self.img_tok = img_tok            # "<image>" or "▁<image>" …
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, idx):
+        ex = self.data[idx]
+        q  = ex["question"].strip()
+        if not q.endswith("?"):
+            q += "?"
+        prompt = f"{self.img_tok} Question: {q} Answer:"   # ← token added
+
+        gts = ([d["answer"] for d in ex["answers"]]
+               if isinstance(ex["answers"][0], dict)
+               else ex["answers"])
+
+        return {"image": ex["image"].convert("RGB"),
+                "prompt": prompt,
+                "answers": gts}
 
 # ─── Collate factory (needs loaded processor) ────────────────────────────────
 def make_collate(proc):
@@ -64,8 +77,11 @@ def main():
     split = load_dataset("HuggingFaceM4/VQAv2", split=a.split, trust_remote_code=True,
                          storage_options={"client_kwargs":
                              {"timeout": aiohttp.ClientTimeout(total=3600)}})
-    ds  = VQAEvalDS(split)
-    dl  = DataLoader(ds, batch_size=a.batch_size, shuffle=False,
+    # ── image token string (handles whitespace) ────────────────────────────
+    image_tok_str = processor.tokenizer.decode(
+        [model.config.image_token_id]).strip()
+    eval_ds = VQAEvalDataset(split, image_tok_str)
+    dl  = DataLoader(eval_ds, batch_size=a.batch_size, shuffle=False,
                      collate_fn=make_collate(processor), num_workers=4)
 
     model.eval(); dev = torch.device(a.device)
