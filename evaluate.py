@@ -61,7 +61,7 @@ def vqa_infer_collate_fn_factory(processor, device):
             padding=True,
             truncation=True,
             return_tensors="pt",
-        ).to(device)
+        )
 
         # Pass through extra fields needed for metric
         enc["answer_list"]  = [ex["answers"] for ex in batch]          # list of 10×str
