@@ -156,7 +156,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=2e-5)
-    parser.add_argument("--tuning_mode", choices=["full", "lora"], default="full",
+    parser.add_argument("--tuning_mode", choices=["full", "lora"], default="lora",
                         help="Fine‑tune strategy for the Q‑Former")
     return parser.parse_args()
 
