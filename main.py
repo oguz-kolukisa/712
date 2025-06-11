@@ -198,7 +198,7 @@ def main():
             target_modules=[
                 "query", "key", "value",  # attention projections
                 "output",                      # attn output
-                "output_query", "intermediate_query",                  # MLP layers
+                "intermediate_query",                  # MLP layers
             ],
         )
 
