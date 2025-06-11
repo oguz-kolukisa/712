@@ -94,6 +94,7 @@ def main():
     parser.add_argument("--split", default="validation", choices=["train", "validation", "test"])
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--max_new_tokens", type=int, default=5)
+    +parser.add_argument("--processor_name_or_path", default="Salesforce/blip2-flan-t5-xl", help="HF repo or local dir that holds the Blip2Processor")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -108,7 +109,7 @@ def main():
 
     # 2) Model + processor ──────────────────────────────────────────────────────
     model      = Blip2ForConditionalGeneration.from_pretrained(args.ckpt_dir).to(device).eval()
-    processor  = Blip2Processor.from_pretrained(args.ckpt_dir)
+    processor = Blip2Processor.from_pretrained(args.processor_name_or_path)    
     processor.tokenizer.pad_token = processor.tokenizer.eos_token
 
     # 3) DataLoader ─────────────────────────────────────────────────────────────
