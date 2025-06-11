@@ -66,7 +66,7 @@ def load_blip2_llama(blip_opt, llama, device, img_size):
     proc.tokenizer = llama_tok
     proc.tokenizer.pad_token = proc.tokenizer.eos_token
     # set target image size (shortest-edge)
-    proc.image_processor.size["shortest_edge"] = img_size
+    proc.image_processor.size = {"shortest_edge": img_size}
 
     model.to(device)
     return model, proc
@@ -112,7 +112,7 @@ def get_args():
     p.add_argument("--output_dir",     default="./blip2-llama-vqa-checkpoints-qformer")
     # defaults per request
     p.add_argument("--epochs",      type=int,   default=5)
-    p.add_argument("--batch_size",  type=int,   default=128)
+    p.add_argument("--batch_size",  type=int,   default=32)
     p.add_argument("--lr",          type=float, default=1e-5)
     p.add_argument("--warmup",      type=int,   default=1000)
     p.add_argument("--weight_decay",type=float, default=0.05)
