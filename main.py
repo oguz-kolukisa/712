@@ -55,6 +55,7 @@ def load_blip2_llama(blip_opt, llama, device, img_size):
     model.vision_model.load_state_dict(blip.vision_model.state_dict())
     model.qformer.load_state_dict(blip.qformer.state_dict())
     model.language_model.load_state_dict(llama_lm.state_dict())
+    model.config.vision_config.interpolate_pos_encoding = True
 
     # 4) resize embeddings after adding <image>
     needed = len(llama_tok)
