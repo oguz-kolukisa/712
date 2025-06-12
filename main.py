@@ -66,7 +66,7 @@ def load_blip2_llama(blip_opt, llama, device, img_size):
     proc.tokenizer = llama_tok
     proc.tokenizer.pad_token = proc.tokenizer.eos_token
     # set target image size (shortest-edge)
-    proc.image_processor.size = {"shortest_edge": img_size}
+    proc.image_processor.size = {"height": img_size, "width": img_size}
 
     model.to(device)
     return model, proc
