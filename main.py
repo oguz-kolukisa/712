@@ -116,8 +116,8 @@ def main():
                     num_train_epochs=a.epochs, warmup_steps=a.warmup,
                     learning_rate=a.lr, weight_decay=a.weight_decay,
                     adam_beta1=0.9, adam_beta2=0.999, fp16=torch.cuda.is_available(),
-                    logging_steps=50, save_steps=1000, save_total_limit=2,
-                    eval_strategy="steps", eval_steps=5000, remove_unused_columns=False,
+                    logging_steps=500, save_steps=1000, save_total_limit=1,
+                     remove_unused_columns=False,
                     dataset_kwargs={"skip_prepare_dataset": True})
 
     trainer = SFTTrainer(model=model, args=cfg,
