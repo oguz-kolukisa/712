@@ -44,8 +44,7 @@ def load_blip2_llama(blip_opt, llama, device, img_size):
     processor = Blip2Processor.from_pretrained(blip_opt)
     processor.tokenizer = tok
     processor.tokenizer.pad_token = processor.tokenizer.eos_token
-    processor.image_processor.size = {"shortest_edge": img_size}
-
+    processor.image_processor.size = {"height": img_size, "width": img_size}
     model.to(device)
     return model, processor
 
