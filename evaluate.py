@@ -110,7 +110,7 @@ def main():
         gen = model.generate(pixel_values=batch["pixel_values"],
                              input_ids=batch["input_ids"],
                              attention_mask=batch["attention_mask"],
-                             max_new_tokens=args.max_new_tokens
+                             max_new_tokens=args.max_new_tokens,
                              num_beams=5,)
         dec = processor.tokenizer.batch_decode(gen, skip_special_tokens=True)
 
