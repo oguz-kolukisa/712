@@ -107,9 +107,9 @@ def main():
     if a.tuning_mode == "full": freeze_but_qformer(model)
     else:
         freeze_all(model)
-        model.qformer = get_peft_model(model.qformer, LoraConfig(
-            r=8, lora_alpha=16, lora_dropout=0.05, bias="none", task_type="CAUSAL_LM",
-            target_modules=["q_proj","k_proj","v_proj","out_proj","fc1","fc2"]))
+        model.qformer = get_peft_model(model.qformer, LoraConfig(r=8, lora_alpha=16, lora_dropout=0.05,
+                              bias="none",
+                              target_modules=[ "query", "key", "value"]))
 
     collate = make_collate(proc)
     cfg = SFTConfig(output_dir=a.output_dir, per_device_train_batch_size=a.batch_size,
